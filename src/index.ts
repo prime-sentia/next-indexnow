@@ -86,6 +86,54 @@ export async function notifyBatch(urls: string[], options: IndexNowOptions): Pro
 }
 
 /**
+ * Fetches an XML sitemap, extracts all URLs, and submits them to IndexNow in batches of 10,000.
+ * @param sitemapUrl The full URL to your sitemap.xml
+ * @param options Configuration options including the API key and host.
+ * @returns A promise that resolves when all URLs have been submitted.
+ */
+export async function notifySitemap(sitemapUrl: string, options: IndexNowOptions): Promise<void> {
+  const { host } = options;
+  if (!host) {
+    throw new Error('The "host" option is required for sitemap notifications.');
+  }
+
+  const response = await fetch(sitemapUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch sitemap: ${response.status} ${response.statusText}`);
+  }
+
+  const xmlText = await response.text();
+  
+  // Fast, zero-dependency regex extraction for <loc> tags
+  const urls: string[] = [];
+  const locRegex = /<loc>(.*?)<\/loc>/g;
+  let match;
+
+  while ((match = locRegex.exec(xmlText)) !== null) {
+    if (match[1]) {
+      // Decode XML entities (e.g., &amp;) if any
+      const url = match[1].replace(/&amp;/g, '&')
+                          .replace(/&lt;/g, '<')
+                          .replace(/&gt;/g, '>')
+                          .replace(/&quot;/g, '"')
+                          .replace(/&apos;/g, "'");
+      urls.push(url.trim());
+    }
+  }
+
+  if (urls.length === 0) {
+    return;
+  }
+
+  // IndexNow allows a maximum of 10,000 URLs per batch request
+  const CHUNK_SIZE = 10000;
+  for (let i = 0; i < urls.length; i += CHUNK_SIZE) {
+    const chunk = urls.slice(i, i + CHUNK_SIZE);
+    await notifyBatch(chunk, options);
+  }
+}
+
+/**
  * Generates a compliant 32-character hexadecimal key for IndexNow.
  * @returns A secure 32-character hexadecimal string.
  */

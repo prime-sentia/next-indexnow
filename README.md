@@ -106,6 +106,23 @@ async function syncAllPages() {
 }
 ```
 
+### Automatic Sitemap Submission (Killer Feature 🚀)
+
+Instead of manually keeping track of URLs, you can point `next-indexnow` directly to your XML sitemap. It will automatically fetch the sitemap, extract all URLs (with zero heavy XML dependencies), split them into chunks of 10,000 (IndexNow's limit), and submit everything at once.
+
+```typescript
+import { notifySitemap } from 'next-indexnow';
+
+async function syncEntireWebsite() {
+  await notifySitemap('https://yoursite.com/sitemap.xml', {
+    key: process.env.INDEXNOW_KEY,
+    host: 'yoursite.com' // Required
+  });
+  
+  console.log('All sitemap URLs automatically sent to IndexNow!');
+}
+```
+
 ## Options
 
 Both `notifyUrl` and `notifyBatch` accept an options object:

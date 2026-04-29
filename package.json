@@ -1,0 +1,47 @@
+{
+  "name": "next-indexnow",
+  "version": "1.0.0",
+  "description": "IndexNow protocol integration for Next.js applications",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./next": {
+      "types": "./dist/next.d.ts",
+      "import": "./dist/next.mjs",
+      "require": "./dist/next.js"
+    }
+  },
+  "bin": {
+    "next-indexnow": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch"
+  },
+  "keywords": [
+    "nextjs",
+    "indexnow",
+    "seo",
+    "bing",
+    "yandex"
+  ],
+  "author": "Prime Sentia",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsup": "^8.0.2",
+    "typescript": "^5.4.5"
+  },
+  "peerDependencies": {
+    "next": ">=13.0.0"
+  }
+}

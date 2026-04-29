@@ -115,6 +115,19 @@ Both `notifyUrl` and `notifyBatch` accept an options object:
 - `keyLocation` (string, optional): Full URL to your key file if it's not hosted at the exact root with the exact key name.
 - `endpoint` (string, optional): The IndexNow endpoint to ping. Defaults to `api.indexnow.org`.
 
+## Contributing
+
+This is an open-source project by [Prime Sentia](https://primesentia.ai), and we welcome contributions from the community!
+
+If you'd like to help improve `next-indexnow`:
+1. Fork the repository.
+2. Create a new branch (`git checkout -b feature/my-amazing-feature`).
+3. Make your changes and commit them (`git commit -m 'feat: add my amazing feature'`).
+4. Push to the branch (`git push origin feature/my-amazing-feature`).
+5. Open a Pull Request.
+
+If you find a bug or have a feature request, please [open an issue](https://github.com/prime-sentia/next-indexnow/issues).
+
 ## License
 MIT
 

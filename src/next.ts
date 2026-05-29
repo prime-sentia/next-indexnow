@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import type { NextApiRequest, NextApiResponse } from 'next';
 import { notifyBatch, notifyUrl, type IndexNowOptions } from './index';
 
 /**
@@ -18,10 +19,7 @@ import { notifyBatch, notifyUrl, type IndexNowOptions } from './index';
  * @returns A Next.js route handler function for GET requests.
  */
 export function createIndexNowRouteHandler(expectedKey: string) {
-  return async function GET(
-    _request: Request,
-    { params }: { params: Promise<{ key: string }> }
-  ) {
+  return async function GET(_request: Request, { params }: { params: Promise<{ key: string }> }) {
     // Next.js 15+ passes `params` as a Promise; Next 13/14 pass a plain object.
     // Awaiting a non-thenable is a no-op, so this works on every supported version.
     const { key } = await params;
@@ -45,6 +43,35 @@ export function createIndexNowRouteHandler(expectedKey: string) {
 
     // Return 404 if the key does not match
     return new NextResponse('Not found', { status: 404 });
+  };
+}
+
+/**
+ * Creates a Pages Router API handler for serving the IndexNow key.
+ *
+ * Usage — create a file at `pages/api/[key].ts`:
+ *
+ * ```ts
+ * import { createIndexNowApiHandler } from 'next-indexnow/next';
+ *
+ * export default createIndexNowApiHandler(process.env.INDEXNOW_KEY!);
+ * ```
+ *
+ * @param expectedKey The API key that you have configured for IndexNow.
+ * @returns A Pages Router `(req, res)` handler.
+ */
+export function createIndexNowApiHandler(expectedKey: string) {
+  return function handler(req: NextApiRequest, res: NextApiResponse): void {
+    const raw = Array.isArray(req.query.key) ? req.query.key[0] : req.query.key;
+    const requestKey = (raw ?? '').replace(/\.txt$/, '');
+
+    if (requestKey === expectedKey) {
+      res.setHeader('Content-Type', 'text/plain');
+      res.status(200).send(expectedKey);
+      return;
+    }
+
+    res.status(404).send('Not found');
   };
 }
 
@@ -89,9 +116,10 @@ export async function notifyAfter(
     }
   };
 
-  const serverMod = (await import('next/server').catch(() => null)) as
-    | { after?: (cb: () => Promise<void> | void) => void; unstable_after?: (cb: () => Promise<void> | void) => void }
-    | null;
+  const serverMod = (await import('next/server').catch(() => null)) as {
+    after?: (cb: () => Promise<void> | void) => void;
+    unstable_after?: (cb: () => Promise<void> | void) => void;
+  } | null;
   const after = serverMod?.after ?? serverMod?.unstable_after;
 
   if (typeof after === 'function') {
@@ -139,9 +167,10 @@ export async function revalidateAndNotify(
 ): Promise<void> {
   const { baseUrl, tag, ...indexNowOptions } = options;
 
-  const cacheMod = (await import('next/cache').catch(() => null)) as
-    | { revalidatePath?: (p: string) => void; revalidateTag?: (t: string) => void }
-    | null;
+  const cacheMod = (await import('next/cache').catch(() => null)) as {
+    revalidatePath?: (p: string) => void;
+    revalidateTag?: (t: string) => void;
+  } | null;
 
   if (tag) {
     cacheMod?.revalidateTag?.(tag);

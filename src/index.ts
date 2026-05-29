@@ -1,5 +1,3 @@
-import crypto from 'crypto';
-
 export interface IndexNowOptions {
   /** The API key provided to the search engine */
   key: string;
@@ -22,14 +20,46 @@ export interface IndexNowOptions {
 const DEFAULT_ENDPOINT = 'api.indexnow.org';
 
 /**
+ * IndexNow keys must be 8–128 characters long and contain only
+ * a–z, A–Z, 0–9 and dashes (per the protocol spec).
+ */
+const KEY_PATTERN = /^[A-Za-z0-9-]{8,128}$/;
+
+/**
+ * Validates a key against the IndexNow format rules.
+ * @param key The key to validate.
+ * @returns `true` if the key is a valid IndexNow key.
+ */
+export function isValidIndexNowKey(key: string): boolean {
+  return typeof key === 'string' && KEY_PATTERN.test(key);
+}
+
+function assertValidKey(key: string): void {
+  if (!isValidIndexNowKey(key)) {
+    throw new Error(
+      `Invalid IndexNow key: expected 8–128 characters (a–z, A–Z, 0–9, -), ` +
+        `received ${key ? `"${key}"` : 'an empty or undefined value'}. ` +
+        `Did you forget to set process.env.INDEXNOW_KEY?`
+    );
+  }
+}
+
+/**
  * Notifies IndexNow about a single URL update or deletion.
  * @param url The exact URL that was updated or deleted.
  * @param options Configuration options including the API key.
  * @returns A promise that resolves when the request is successful.
  */
 export async function notifyUrl(url: string, options: IndexNowOptions): Promise<void> {
-  const { key, endpoint = DEFAULT_ENDPOINT } = options;
-  const apiUrl = `https://${endpoint}/indexnow?url=${encodeURIComponent(url)}&key=${key}`;
+  const { key, keyLocation, endpoint = DEFAULT_ENDPOINT } = options;
+  assertValidKey(key);
+
+  let apiUrl =
+    `https://${endpoint}/indexnow?url=${encodeURIComponent(url)}` +
+    `&key=${encodeURIComponent(key)}`;
+  if (keyLocation) {
+    apiUrl += `&keyLocation=${encodeURIComponent(keyLocation)}`;
+  }
 
   const response = await fetch(apiUrl, {
     method: 'GET',
@@ -54,6 +84,7 @@ export async function notifyBatch(urls: string[], options: IndexNowOptions): Pro
   }
 
   const { key, host, keyLocation, endpoint = DEFAULT_ENDPOINT } = options;
+  assertValidKey(key);
 
   if (!host) {
     throw new Error('The "host" option is required for batch notifications.');
@@ -135,8 +166,12 @@ export async function notifySitemap(sitemapUrl: string, options: IndexNowOptions
 
 /**
  * Generates a compliant 32-character hexadecimal key for IndexNow.
+ * Uses the Web Crypto API (available in Node 18+, the Edge runtime and browsers),
+ * so the module stays free of Node-only built-ins and bundles on every runtime.
  * @returns A secure 32-character hexadecimal string.
  */
 export function generateKey(): string {
-  return crypto.randomBytes(16).toString('hex');
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }

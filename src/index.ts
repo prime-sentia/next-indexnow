@@ -1,3 +1,21 @@
+/**
+ * IndexNow endpoint hosts for each participating search engine. Submitting to any
+ * one of them (the default `indexnow` / `api.indexnow.org` included) shares the
+ * URLs with all the others within ~10 seconds, so per-engine targeting is rarely
+ * needed — reach for it only for regional emphasis.
+ */
+export const SEARCH_ENGINES = {
+  indexnow: 'api.indexnow.org',
+  bing: 'www.bing.com',
+  yandex: 'yandex.com',
+  seznam: 'search.seznam.cz',
+  naver: 'searchadvisor.naver.com',
+  yep: 'indexnow.yep.com',
+} as const;
+
+/** A known IndexNow search-engine name (key of {@link SEARCH_ENGINES}). */
+export type SearchEngine = keyof typeof SEARCH_ENGINES;
+
 export interface IndexNowOptions {
   /** The API key provided to the search engine */
   key: string;
@@ -12,9 +30,11 @@ export interface IndexNowOptions {
    */
   keyLocation?: string;
   /**
-   * The search engine endpoint. Defaults to 'api.indexnow.org'
+   * Which IndexNow endpoint to ping — a known engine name (see {@link SEARCH_ENGINES})
+   * or a raw host. Defaults to `'indexnow'` (`api.indexnow.org`), which already shares
+   * the submission with every participating engine within ~10s.
    */
-  endpoint?: string;
+  endpoint?: SearchEngine | (string & {});
   /**
    * Maximum number of retry attempts for transient failures (HTTP 429 and 5xx).
    * Defaults to 3. Set to 0 to disable retries.
@@ -72,7 +92,7 @@ export interface IndexNowResult {
   responses: IndexNowResponse[];
 }
 
-const DEFAULT_ENDPOINT = 'api.indexnow.org';
+const DEFAULT_ENDPOINT = SEARCH_ENGINES.indexnow;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 10000;
@@ -144,6 +164,12 @@ function assertValidKey(key: string): void {
 
 function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
+}
+
+/** Resolves an engine name (e.g. 'bing') to its host, or passes a raw host through. */
+function resolveEndpoint(endpoint?: string): string {
+  if (!endpoint) return DEFAULT_ENDPOINT;
+  return SEARCH_ENGINES[endpoint as SearchEngine] ?? endpoint;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -260,8 +286,9 @@ async function sendRequest(
  * @throws {IndexNowError} On a non-retryable / retry-exhausted API error.
  */
 export async function notifyUrl(url: string, options: IndexNowOptions): Promise<IndexNowResult> {
-  const { key, keyLocation, endpoint = DEFAULT_ENDPOINT } = options;
+  const { key, keyLocation } = options;
   assertValidKey(key);
+  const endpoint = resolveEndpoint(options.endpoint);
 
   let apiUrl =
     `https://${endpoint}/indexnow?url=${encodeURIComponent(url)}` +
@@ -292,8 +319,9 @@ export async function notifyBatch(
 
 /** Shared submission pipeline: validate, normalize (dedupe + host check), chunk, send. */
 async function submitUrlList(urls: string[], options: IndexNowOptions): Promise<IndexNowResult> {
-  const { key, host, keyLocation, endpoint = DEFAULT_ENDPOINT } = options;
+  const { key, host, keyLocation } = options;
   assertValidKey(key);
+  const endpoint = resolveEndpoint(options.endpoint);
 
   if (!host) {
     throw new Error('The "host" option is required for batch and sitemap notifications.');

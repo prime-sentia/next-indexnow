@@ -223,7 +223,7 @@ All notify functions accept an options object:
 - `key` (string, **required**): Your IndexNow API key. Validated locally before any request.
 - `host` (string, required for batch/sitemap): Your website's host (e.g., `www.example.com`). `www` and non-`www` count as different hosts.
 - `keyLocation` (string, optional): Full URL to your key file if it's not hosted at the exact root with the exact key name.
-- `endpoint` (string, optional): The IndexNow endpoint to ping. Defaults to `api.indexnow.org`.
+- `endpoint` (string, optional): A known engine name (`'indexnow'` | `'bing'` | `'yandex'` | `'seznam'` | `'naver'` | `'yep'`) or a raw host. Defaults to `'indexnow'` (`api.indexnow.org`), which already propagates to every participating engine within ~10s — so per-engine targeting is rarely necessary.
 - `maxRetries` (number, optional): Retry attempts for transient failures (`429`/`5xx`). Defaults to `3`; honors the `Retry-After` header.
 - `retryDelayMs` (number, optional): Base delay for exponential backoff between retries. Defaults to `1000`.
 - `timeoutMs` (number, optional): Per-request timeout via `AbortController`. Defaults to `10000`; set to `0` to disable. A timeout is **not** retried (so worst-case blocking stays bounded), but other transient network errors are.
@@ -231,6 +231,21 @@ All notify functions accept an options object:
 - `since` (Date, optional, **sitemap only**): Only submit URLs whose `<lastmod>` is at or after this date (child sitemaps older than `since` are skipped without being fetched). URLs without a `<lastmod>` are always included. Great for incremental cron runs. A date-only `<lastmod>` (`YYYY-MM-DD`) is treated as **end of that UTC day**, and a datetime without a timezone is interpreted as **UTC**, so filtering is deterministic across deployments.
 
 > **Runtime:** requires Node 20+ (for the Web Crypto global used by `generateKey`), the Edge runtime, or a browser. The core notify functions are dependency-free and Edge-compatible.
+
+### Targeting a specific search engine
+
+Submitting once to the default endpoint already shares your URLs with every participating engine, but you can target one directly by name (or import the `SEARCH_ENGINES` map):
+
+```typescript
+import { notifyUrl, SEARCH_ENGINES } from 'next-indexnow';
+
+await notifyUrl('https://yoursite.com/page', { key, endpoint: 'bing' });
+// SEARCH_ENGINES === { indexnow, bing, yandex, seznam, naver, yep }
+```
+
+## Example
+
+A minimal App Router wiring (key file, a notify Server Action, sitemap + postbuild submission) lives in [`examples/app-router`](examples/app-router).
 
 ## Contributing
 

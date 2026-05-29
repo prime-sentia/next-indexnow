@@ -1,0 +1,16 @@
+{
+  "name": "next-indexnow-example-app-router",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Illustrative Next.js App Router wiring for next-indexnow (not published)",
+  "scripts": {
+    "build": "next build",
+    "postbuild": "next-indexnow sitemap \"$SITE_URL/sitemap.xml\""
+  },
+  "dependencies": {
+    "next": "^15.0.0",
+    "next-indexnow": "^1.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

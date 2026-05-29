@@ -25,7 +25,12 @@ vi.mock('next/cache', () => ({
   revalidateTag: vi.fn(),
 }));
 
-import { createIndexNowRouteHandler, notifyAfter, revalidateAndNotify } from '../src/next';
+import {
+  createIndexNowApiHandler,
+  createIndexNowRouteHandler,
+  notifyAfter,
+  revalidateAndNotify,
+} from '../src/next';
 import * as nextCache from 'next/cache';
 
 type ResponseShape = { body: unknown; status: number; headers: Record<string, string> };
@@ -68,6 +73,43 @@ describe('createIndexNowRouteHandler', () => {
       params: Promise.resolve({ key: '' }),
     })) as unknown as ResponseShape;
     expect(res.status).toBe(404);
+  });
+});
+
+describe('createIndexNowApiHandler (Pages Router)', () => {
+  function mockRes() {
+    return {
+      statusCode: 0,
+      body: undefined as unknown,
+      headers: {} as Record<string, string>,
+      setHeader(k: string, v: string) {
+        this.headers[k] = v;
+      },
+      status(code: number) {
+        this.statusCode = code;
+        return this;
+      },
+      send(b: unknown) {
+        this.body = b;
+        return this;
+      },
+    };
+  }
+
+  const handler = createIndexNowApiHandler('mykey123');
+
+  it('serves the key when the query key matches (with .txt stripped)', () => {
+    const res = mockRes();
+    handler({ query: { key: 'mykey123.txt' } } as any, res as any);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe('mykey123');
+    expect(res.headers['Content-Type']).toBe('text/plain');
+  });
+
+  it('returns 404 when the query key does not match', () => {
+    const res = mockRes();
+    handler({ query: { key: 'wrong' } } as any, res as any);
+    expect(res.statusCode).toBe(404);
   });
 });
 

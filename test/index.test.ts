@@ -6,6 +6,7 @@ import {
   notifyUrl,
   notifyBatch,
   notifySitemap,
+  verifyKeyFile,
   IndexNowError,
 } from '../src/index';
 
@@ -141,7 +142,10 @@ describe('notifyUrl', () => {
   it('honors a Retry-After HTTP-date header (past date clamps to 0)', async () => {
     const fetchFn = mockFetch()
       .mockResolvedValueOnce(
-        new Response('', { status: 503, headers: { 'retry-after': 'Wed, 21 Oct 2015 07:28:00 GMT' } })
+        new Response('', {
+          status: 503,
+          headers: { 'retry-after': 'Wed, 21 Oct 2015 07:28:00 GMT' },
+        })
       )
       .mockResolvedValueOnce(ok(200));
     const res = await notifyUrl('https://x.com/a', { key: KEY });
@@ -178,6 +182,55 @@ describe('notifyUrl', () => {
     expect(err.status).toBe(503);
     expect(fetchFn).toHaveBeenCalledTimes(1); // did not sleep/retry
   });
+
+  it('retries a network error then throws a wrapped error (shared attempt counter)', async () => {
+    const fetchFn = mockFetch()
+      .mockResolvedValueOnce(new Response('', { status: 500 })) // HTTP-retryable
+      .mockRejectedValueOnce(new Error('ECONNRESET')) // network-retryable
+      .mockResolvedValueOnce(ok(200));
+    const res = await notifyUrl('https://x.com/a', { key: KEY, retryDelayMs: 0 });
+    expect(res.ok).toBe(true);
+    expect(res.responses[0].attempts).toBe(3); // both paths share one counter
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+  });
+
+  it('throws a wrapped error after exhausting network-error retries', async () => {
+    const fetchFn = mockFetch().mockRejectedValue(new Error('network down'));
+    await expect(
+      notifyUrl('https://x.com/a', { key: KEY, maxRetries: 1, retryDelayMs: 0 })
+    ).rejects.toThrow(/failed after 2 attempt\(s\): network down/);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('treats a timeout (AbortError) as non-retryable to bound the blocking budget', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchFn = vi.fn((_url: string, init: RequestInit) => {
+        return new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+          );
+        });
+      });
+      vi.stubGlobal('fetch', fetchFn);
+      // Attach the rejection handler immediately so advancing timers doesn't
+      // momentarily leave the rejection unhandled.
+      const settled = notifyUrl('https://x.com/a', {
+        key: KEY,
+        timeoutMs: 5000,
+        maxRetries: 3, // would retry if timeouts were retryable
+        retryDelayMs: 0,
+      }).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(5000); // fires the abort
+      const err = await settled;
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toMatch(/timed out after 5000ms/);
+      expect(fetchFn).toHaveBeenCalledTimes(1); // not retried despite maxRetries: 3
+      expect((fetchFn.mock.calls[0][1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('notifyBatch', () => {
@@ -195,10 +248,10 @@ describe('notifyBatch', () => {
 
   it('de-duplicates URLs', async () => {
     const fetchFn = mockFetch().mockResolvedValue(ok());
-    const res = await notifyBatch(
-      ['https://x.com/a', 'https://x.com/a', 'https://x.com/b'],
-      { key: KEY, host: 'x.com' }
-    );
+    const res = await notifyBatch(['https://x.com/a', 'https://x.com/a', 'https://x.com/b'], {
+      key: KEY,
+      host: 'x.com',
+    });
     expect(res.submitted).toBe(2);
     expect(res.skipped).toBe(1);
     const body = JSON.parse((fetchFn.mock.calls[0][1] as RequestInit).body as string);
@@ -244,7 +297,7 @@ describe('notifyBatch', () => {
   });
 
   it('skips an unparseable URL under onHostMismatch: "skip"', async () => {
-    const fetchFn = mockFetch().mockResolvedValue(ok());
+    mockFetch().mockResolvedValue(ok());
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await notifyBatch(['https://x.com/a', 'not a url'], {
       key: KEY,
@@ -358,5 +411,111 @@ describe('generateKey runtime guard', () => {
   it('throws a clear error when Web Crypto is unavailable', () => {
     vi.stubGlobal('crypto', undefined);
     expect(() => generateKey()).toThrow(/Web Crypto/);
+  });
+});
+
+describe('notifySitemap since-filtering', () => {
+  function xmlResponse(xml: string) {
+    return new Response(xml, { status: 200, headers: { 'content-type': 'application/xml' } });
+  }
+
+  it('submits only URLs at/after `since` (no-lastmod URLs always included)', async () => {
+    const sitemap = `<urlset>
+      <url><loc>https://x.com/old</loc><lastmod>2020-01-01</lastmod></url>
+      <url><loc>https://x.com/new</loc><lastmod>2026-01-01</lastmod></url>
+      <url><loc>https://x.com/nomod</loc></url>
+    </urlset>`;
+    const fetchFn = mockFetch().mockResolvedValueOnce(xmlResponse(sitemap)).mockResolvedValue(ok());
+    const res = await notifySitemap('https://x.com/sitemap.xml', {
+      key: KEY,
+      host: 'x.com',
+      since: new Date('2025-01-01'),
+    });
+    expect(res.submitted).toBe(2);
+    const body = JSON.parse((fetchFn.mock.calls[1][1] as RequestInit).body as string);
+    expect(body.urlList).toEqual(['https://x.com/new', 'https://x.com/nomod']);
+  });
+
+  it('skips child sitemaps older than `since` without fetching them', async () => {
+    const index = `<sitemapindex>
+      <sitemap><loc>https://x.com/s-old.xml</loc><lastmod>2020-01-01</lastmod></sitemap>
+      <sitemap><loc>https://x.com/s-new.xml</loc><lastmod>2026-01-01</lastmod></sitemap>
+    </sitemapindex>`;
+    const childNew = `<urlset><url><loc>https://x.com/n</loc></url></urlset>`;
+    const fetchFn = mockFetch()
+      .mockResolvedValueOnce(xmlResponse(index))
+      .mockResolvedValueOnce(xmlResponse(childNew))
+      .mockResolvedValue(ok());
+    const res = await notifySitemap('https://x.com/index.xml', {
+      key: KEY,
+      host: 'x.com',
+      since: new Date('2025-01-01'),
+    });
+    expect(res.submitted).toBe(1);
+    expect(fetchFn).toHaveBeenCalledTimes(3); // index + new child + submit (old child not fetched)
+  });
+
+  it('includes a date-only lastmod equal to the `since` day (end-of-day UTC)', async () => {
+    const sitemap = `<urlset>
+      <url><loc>https://x.com/today</loc><lastmod>2026-05-27</lastmod></url>
+    </urlset>`;
+    const fetchFn = mockFetch().mockResolvedValueOnce(xmlResponse(sitemap)).mockResolvedValue(ok());
+    const res = await notifySitemap('https://x.com/sitemap.xml', {
+      key: KEY,
+      host: 'x.com',
+      since: new Date('2026-05-27T15:00:00Z'), // mid-day on the lastmod day
+    });
+    expect(res.submitted).toBe(1);
+    const body = JSON.parse((fetchFn.mock.calls[1][1] as RequestInit).body as string);
+    expect(body.urlList).toEqual(['https://x.com/today']);
+  });
+
+  it('only submits the page <loc>, not namespaced locs like <image:loc>', async () => {
+    const sitemap = `<urlset>
+      <url>
+        <loc>https://x.com/page</loc>
+        <image:image><image:loc>https://x.com/photo.jpg</image:loc></image:image>
+      </url>
+    </urlset>`;
+    const fetchFn = mockFetch().mockResolvedValueOnce(xmlResponse(sitemap)).mockResolvedValue(ok());
+    const res = await notifySitemap('https://x.com/sitemap.xml', { key: KEY, host: 'x.com' });
+    expect(res.submitted).toBe(1);
+    const body = JSON.parse((fetchFn.mock.calls[1][1] as RequestInit).body as string);
+    expect(body.urlList).toEqual(['https://x.com/page']);
+  });
+});
+
+describe('verifyKeyFile', () => {
+  it('returns ok when the key file serves the exact key', async () => {
+    mockFetch().mockResolvedValue(new Response('mykey1234', { status: 200 }));
+    const res = await verifyKeyFile({ key: 'mykey1234', host: 'x.com' });
+    expect(res.ok).toBe(true);
+    expect(res.url).toBe('https://x.com/mykey1234.txt');
+  });
+
+  it('fails when the key file is missing (404)', async () => {
+    mockFetch().mockResolvedValue(new Response('nope', { status: 404 }));
+    const res = await verifyKeyFile({ key: 'mykey1234', host: 'x.com' });
+    expect(res.ok).toBe(false);
+    expect(res.status).toBe(404);
+  });
+
+  it('fails when the contents do not match the key', async () => {
+    mockFetch().mockResolvedValue(new Response('different', { status: 200 }));
+    const res = await verifyKeyFile({ key: 'mykey1234', keyLocation: 'https://x.com/k.txt' });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/do not match/);
+  });
+
+  it('returns a failed result (does not throw) on a network error', async () => {
+    mockFetch().mockRejectedValue(new Error('ENOTFOUND'));
+    const res = await verifyKeyFile({ key: 'mykey1234', host: 'x.com' });
+    expect(res.ok).toBe(false);
+    expect(res.status).toBeUndefined();
+    expect(res.reason).toMatch(/ENOTFOUND/);
+  });
+
+  it('throws when neither host nor keyLocation is provided', async () => {
+    await expect(verifyKeyFile({ key: 'mykey1234' })).rejects.toThrow(/keyLocation.*host/);
   });
 });

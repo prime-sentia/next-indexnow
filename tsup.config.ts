@@ -7,5 +7,5 @@ export default defineConfig({
   splitting: false,
   sourcemap: false,
   clean: true,
-  external: ['next']
+  external: ['next'],
 });

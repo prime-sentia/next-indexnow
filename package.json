@@ -42,6 +42,9 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "format": "prettier --write \"{src,test}/**/*.ts\" \"*.{ts,mjs,json,md}\" \".github/workflows/*.yml\"",
+    "format:check": "prettier --check \"{src,test}/**/*.ts\" \"*.{ts,mjs,json,md}\" \".github/workflows/*.yml\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build"
@@ -64,12 +67,17 @@
   },
   "homepage": "https://github.com/primesentia/next-indexnow#readme",
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
     "@types/node": "^20.0.0",
+    "eslint": "^9.39.4",
+    "eslint-config-prettier": "^9.1.2",
     "next": "^16.0.0",
+    "prettier": "^3.8.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tsup": "^8.0.2",
     "typescript": "^5.4.5",
+    "typescript-eslint": "^8.60.0",
     "vitest": "^3.0.0"
   },
   "peerDependencies": {

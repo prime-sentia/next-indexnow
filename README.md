@@ -3,9 +3,9 @@
 [![npm version](https://img.shields.io/npm/v/next-indexnow.svg)](https://www.npmjs.com/package/next-indexnow)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A simple, lightweight, and modern package to integrate the [IndexNow](https://www.indexnow.org/) protocol into your Next.js applications. Notify search engines (like Bing, Yandex, Seznam, etc.) instantly when your content changes. Fast indexing is the foundational step for **[Generative Engine Optimization (GEO)](https://geo.primesentia.ai/)**.
+A simple, lightweight, modern package to integrate the [IndexNow](https://www.indexnow.org/) protocol into your Next.js applications — notify search engines (Bing, Yandex, Seznam, and more) instantly when your content changes.
 
-**Developed and maintained by [Prime Sentia](https://primesentia.ai).**
+Developed and maintained by [Prime Sentia](https://primesentia.ai).
 
 ## What is IndexNow?
 
@@ -25,13 +25,9 @@ IndexNow shares submitted URLs across all participating search engines simultane
 
 _(Note: Google is not currently participating in the IndexNow protocol, but fast indexing on Bing/Copilot is crucial for modern AI-driven search visibility)._
 
-## Why IndexNow is Critical for GEO
+## Why it matters for AI search
 
-In the era of AI Search, **[Generative Engine Optimization (GEO)](https://geo.primesentia.ai/)** dictates that being discovered instantly by AI bots (like Bing Chat, Copilot, and ChatGPT search features) is more important than ever.
-
-Traditional crawling can take days or weeks, meaning AI models might generate answers using outdated information from your competitors. By using `next-indexnow`, you guarantee that your brand's fresh content is instantly pinged to search engines, ensuring you are always cited correctly in AI-generated answers.
-
-Learn more about how to dominate AI search results and automate your SEO at **[Prime Sentia](https://primesentia.ai)**.
+AI assistants (Bing Copilot, ChatGPT search, and others) increasingly answer from freshly-indexed content. Because IndexNow pings participating engines within seconds instead of waiting days for a crawl, your latest content is far more likely to be picked up — the foundation of [Generative Engine Optimization (GEO)](https://geo.primesentia.ai/).
 
 ## Installation
 
@@ -267,7 +263,4 @@ MIT
 
 ---
 
-<div align="center">
-  <h3>Powered by <a href="https://primesentia.ai">Prime Sentia AI</a></h3>
-  <p>Leading the future of <a href="https://geo.primesentia.ai/">Generative Engine Optimization (GEO)</a> and AI-driven SEO automation.</p>
-</div>
+Built and maintained by [Prime Sentia](https://primesentia.ai).

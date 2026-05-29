@@ -108,29 +108,80 @@ async function syncAllPages() {
 
 ### Automatic Sitemap Submission (Killer Feature 🚀)
 
-Instead of manually keeping track of URLs, you can point `next-indexnow` directly to your XML sitemap. It will automatically fetch the sitemap, extract all URLs (with zero heavy XML dependencies), split them into chunks of 10,000 (IndexNow's limit), and submit everything at once.
+Instead of manually keeping track of URLs, you can point `next-indexnow` directly to your XML sitemap. It will automatically fetch the sitemap, extract all URLs (with zero heavy XML dependencies), de-duplicate them, split them into chunks of 10,000 (IndexNow's limit), and submit everything at once.
+
+It transparently handles **sitemap-index files** (recursing into child sitemaps), **gzip-compressed sitemaps** (`.xml.gz`), CDATA-wrapped entries and multi-line `<loc>` values — so it works with the output of `next-sitemap` and the App Router's `generateSitemaps()`.
 
 ```typescript
 import { notifySitemap } from 'next-indexnow';
 
 async function syncEntireWebsite() {
-  await notifySitemap('https://yoursite.com/sitemap.xml', {
+  const result = await notifySitemap('https://yoursite.com/sitemap.xml', {
     key: process.env.INDEXNOW_KEY,
     host: 'yoursite.com' // Required
   });
-  
-  console.log('All sitemap URLs automatically sent to IndexNow!');
+
+  console.log(`Submitted ${result.submitted} URLs (skipped ${result.skipped}).`);
 }
+```
+
+### The result object
+
+`notifyUrl`, `notifyBatch` and `notifySitemap` all resolve to a structured `IndexNowResult`:
+
+```typescript
+interface IndexNowResult {
+  ok: boolean;        // every request returned 2xx
+  submitted: number;  // URLs actually sent
+  skipped: number;    // duplicates / off-host URLs
+  responses: { ok: boolean; status: number; statusText: string; urls: string[]; attempts: number }[];
+}
+```
+
+Note that IndexNow returns `202 Accepted` ("validation pending") for valid submissions — this is treated as success. On a non-retryable failure (e.g. `403` invalid key, `422` host mismatch) a typed `IndexNowError` is thrown, carrying `status`, `statusText`, `retryable` and the raw `responseBody`.
+
+## Next.js helpers (`next-indexnow/next`)
+
+### Fire-and-forget after the response: `notifyAfter`
+
+Calling `await notifyUrl(...)` inside a Server Action blocks the response on a network round-trip. `notifyAfter` schedules the ping with Next.js's [`after()`](https://nextjs.org/docs/app/api-reference/functions/after) so it runs *after* the response is sent, and never surfaces indexing errors to the user.
+
+```typescript
+import { notifyAfter } from 'next-indexnow/next';
+
+export async function publishPost(slug: string) {
+  // ...persist your changes...
+  await notifyAfter(`https://yoursite.com/blog/${slug}`, {
+    key: process.env.INDEXNOW_KEY!,
+  });
+}
+```
+
+### Revalidate + notify in one call: `revalidateAndNotify`
+
+On-demand revalidation is the canonical "this content changed, re-index it" signal. `revalidateAndNotify` revalidates the path (or tag) and then notifies IndexNow about the absolute URL.
+
+```typescript
+import { revalidateAndNotify } from 'next-indexnow/next';
+
+await revalidateAndNotify('/blog/my-post', {
+  baseUrl: 'https://yoursite.com',
+  key: process.env.INDEXNOW_KEY!,
+  // tag: 'posts', // optionally revalidate a cache tag instead of a path
+});
 ```
 
 ## Options
 
-Both `notifyUrl` and `notifyBatch` accept an options object:
+All notify functions accept an options object:
 
-- `key` (string, **required**): Your IndexNow API key.
-- `host` (string, required for batch): Your website's host (e.g., `www.example.com`).
+- `key` (string, **required**): Your IndexNow API key. Validated locally before any request.
+- `host` (string, required for batch/sitemap): Your website's host (e.g., `www.example.com`). `www` and non-`www` count as different hosts.
 - `keyLocation` (string, optional): Full URL to your key file if it's not hosted at the exact root with the exact key name.
 - `endpoint` (string, optional): The IndexNow endpoint to ping. Defaults to `api.indexnow.org`.
+- `maxRetries` (number, optional): Retry attempts for transient failures (`429`/`5xx`). Defaults to `3`; honors the `Retry-After` header.
+- `retryDelayMs` (number, optional): Base delay for exponential backoff between retries. Defaults to `1000`.
+- `onHostMismatch` (`'throw' | 'skip'`, optional): What to do with URLs that don't belong to `host`. Defaults to `'throw'`; use `'skip'` to drop them and count them in `result.skipped`.
 
 ## Contributing
 

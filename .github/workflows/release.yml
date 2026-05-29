@@ -4,10 +4,12 @@ name: Release
 # No NPM_TOKEN secret is needed — instead, configure a Trusted Publisher on npmjs.com
 # for this repository and this workflow file (.github/workflows/release.yml).
 # Create a release whose tag matches the package.json version (e.g. v1.1.0).
+# workflow_dispatch is available for testing the OIDC publish pipeline.
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -27,9 +29,16 @@ jobs:
       # Trusted Publishing (OIDC) requires npm >= 11.5.1.
       - run: npm install -g npm@latest
 
+      - name: Diagnostics
+        run: |
+          echo "node: $(node -v)"
+          echo "npm: $(npm -v)"
+          echo "OIDC id-token URL present: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
+
       - run: npm ci
 
       - name: Verify package version matches release tag
+        if: github.event_name == 'release'
         run: |
           PKG_VERSION=$(node -p "require('./package.json').version")
           TAG_VERSION=${GITHUB_REF_NAME#v}

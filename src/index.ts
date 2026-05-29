@@ -32,6 +32,18 @@ export interface IndexNowOptions {
    * - `'skip'`: drop them, warn, and report them in `result.skipped`.
    */
   onHostMismatch?: 'throw' | 'skip';
+  /**
+   * Per-request timeout in milliseconds, applied to every network call via an
+   * `AbortController`. Defaults to 10000. Set to 0 to disable.
+   */
+  timeoutMs?: number;
+  /**
+   * Sitemap-only: when set, only submit URLs whose `<lastmod>` is at or after
+   * this date. Child sitemaps (in an index) whose `<lastmod>` is older are
+   * skipped without being fetched. URLs without a `<lastmod>` are always
+   * included (we can't tell if they changed). Ideal for incremental cron runs.
+   */
+  since?: Date;
 }
 
 /** The outcome of a single HTTP request to the IndexNow endpoint. */
@@ -63,6 +75,7 @@ export interface IndexNowResult {
 const DEFAULT_ENDPOINT = 'api.indexnow.org';
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 1000;
+const DEFAULT_TIMEOUT_MS = 10000;
 // Cap on how long we'll block on backoff/Retry-After before failing fast, so a
 // server can't force a multi-hour sleep that blows a serverless/Edge budget.
 const MAX_RETRY_DELAY_MS = 30000;
@@ -148,6 +161,24 @@ function parseRetryAfter(header: string | null): number | null {
   return null;
 }
 
+/** `fetch` with an `AbortController` timeout (no timeout when `timeoutMs` <= 0). */
+async function fetchWithTimeout(
+  input: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  if (!timeoutMs || timeoutMs <= 0) {
+    return fetch(input, init);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Performs a single IndexNow HTTP request with retry + exponential backoff for
  * transient failures (429/5xx), honoring the `Retry-After` header. Treats any
@@ -161,12 +192,33 @@ async function sendRequest(
 ): Promise<IndexNowResponse> {
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
   const baseDelay = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   let attempt = 0;
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
+  for (;;) {
     attempt++;
-    const response = await fetch(apiUrl, init);
+
+    let response: Response;
+    try {
+      response = await fetchWithTimeout(apiUrl, init, timeoutMs);
+    } catch (error) {
+      // A timeout (AbortError) is NOT retried: each retry would wait another full
+      // timeoutMs and could blow a serverless/Edge budget. Other network errors
+      // fail fast, so retrying them (like a 5xx) is cheap.
+      const isTimeout = error instanceof Error && error.name === 'AbortError';
+      if (!isTimeout && attempt <= maxRetries) {
+        await sleep(Math.min(baseDelay * 2 ** (attempt - 1), MAX_RETRY_DELAY_MS));
+        continue;
+      }
+      const reason = isTimeout
+        ? `timed out after ${timeoutMs}ms`
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      throw new Error(
+        `IndexNow request to ${apiUrl} failed after ${attempt} attempt(s): ${reason}`
+      );
+    }
 
     if (response.ok) {
       return {
@@ -231,7 +283,10 @@ export async function notifyUrl(url: string, options: IndexNowOptions): Promise<
  * @returns A structured result describing the submission.
  * @throws {IndexNowError} On a non-retryable / retry-exhausted API error.
  */
-export async function notifyBatch(urls: string[], options: IndexNowOptions): Promise<IndexNowResult> {
+export async function notifyBatch(
+  urls: string[],
+  options: IndexNowOptions
+): Promise<IndexNowResult> {
   return submitUrlList(urls, options);
 }
 
@@ -350,18 +405,22 @@ function normalizeUrls(
  *
  * Handles sitemap-index files (recursing into child sitemaps), gzip-compressed
  * sitemaps (`.xml.gz`), CDATA-wrapped `<loc>` values and multi-line entries.
+ * Pass `options.since` to only submit URLs changed at or after a given date.
  * @param sitemapUrl The full URL to your sitemap.xml (or sitemap index).
  * @param options Configuration options including the API key and host.
  * @returns A structured result describing the submission.
  * @throws {IndexNowError} On a non-retryable / retry-exhausted API error.
  *   A failed *child* sitemap (within an index) is skipped with a warning, not thrown.
  */
-export async function notifySitemap(sitemapUrl: string, options: IndexNowOptions): Promise<IndexNowResult> {
+export async function notifySitemap(
+  sitemapUrl: string,
+  options: IndexNowOptions
+): Promise<IndexNowResult> {
   if (!options.host) {
     throw new Error('The "host" option is required for sitemap notifications.');
   }
 
-  const urls = await collectSitemapUrls(sitemapUrl, 0);
+  const urls = await collectSitemapUrls(sitemapUrl, 0, options);
   if (urls.length === 0) {
     return { ok: true, submitted: 0, skipped: 0, responses: [] };
   }
@@ -369,8 +428,18 @@ export async function notifySitemap(sitemapUrl: string, options: IndexNowOptions
   return submitUrlList(urls, options);
 }
 
+/** True if an entry passes the `since` filter (kept if no date or not older than `since`). */
+function isNewerThanSince(lastmod: Date | undefined, since: Date | undefined): boolean {
+  if (!since || !lastmod) return true;
+  return lastmod.getTime() >= since.getTime();
+}
+
 /** Recursively collects page URLs from a sitemap or sitemap-index document. */
-async function collectSitemapUrls(sitemapUrl: string, depth: number): Promise<string[]> {
+async function collectSitemapUrls(
+  sitemapUrl: string,
+  depth: number,
+  options: IndexNowOptions
+): Promise<string[]> {
   if (depth > MAX_SITEMAP_DEPTH) {
     throw new Error(
       `IndexNow: sitemap nesting exceeded ${MAX_SITEMAP_DEPTH} levels at "${sitemapUrl}" ` +
@@ -378,32 +447,38 @@ async function collectSitemapUrls(sitemapUrl: string, depth: number): Promise<st
     );
   }
 
-  const xml = await fetchSitemapText(sitemapUrl);
-  const locs = extractLocs(xml);
+  const xml = await fetchSitemapText(sitemapUrl, options);
+  const entries = extractEntries(xml);
+  const { since } = options;
 
   if (isSitemapIndex(xml)) {
-    // Isolate child sitemaps: one unreachable/404 child must not abort the whole
+    // Skip children whose <lastmod> predates `since` (no need to fetch them),
+    // then isolate the rest: one unreachable/404 child must not abort the whole
     // submission. Collect from the children that succeed and warn on the rest.
-    const settled = await Promise.allSettled(locs.map((child) => collectSitemapUrls(child, depth + 1)));
+    const children = entries.filter((e) => isNewerThanSince(e.lastmod, since));
+    const settled = await Promise.allSettled(
+      children.map((child) => collectSitemapUrls(child.loc, depth + 1, options))
+    );
     const urls: string[] = [];
     settled.forEach((outcome, i) => {
       if (outcome.status === 'fulfilled') {
         urls.push(...outcome.value);
       } else {
-        const reason = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+        const reason =
+          outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
         // eslint-disable-next-line no-console
-        console.warn(`[next-indexnow] Skipped child sitemap "${locs[i]}": ${reason}`);
+        console.warn(`[next-indexnow] Skipped child sitemap "${children[i].loc}": ${reason}`);
       }
     });
     return urls;
   }
 
-  return locs;
+  return entries.filter((e) => isNewerThanSince(e.lastmod, since)).map((e) => e.loc);
 }
 
 /** Fetches a sitemap, transparently decompressing gzip-encoded responses/files. */
-async function fetchSitemapText(sitemapUrl: string): Promise<string> {
-  const response = await fetch(sitemapUrl);
+async function fetchSitemapText(sitemapUrl: string, options: IndexNowOptions): Promise<string> {
+  const response = await fetchWithTimeout(sitemapUrl, {}, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   if (!response.ok) {
     throw new Error(
       `Failed to fetch sitemap: ${response.status} ${response.statusText} (${sitemapUrl})`
@@ -429,7 +504,71 @@ function isSitemapIndex(xml: string): boolean {
   return /<sitemapindex[\s>]/i.test(xml);
 }
 
-/** Extracts and decodes all `<loc>` values, handling CDATA and multi-line content. */
+interface SitemapEntry {
+  loc: string;
+  lastmod?: Date;
+}
+
+/**
+ * Extracts `{ loc, lastmod }` entries from a urlset or sitemap-index document.
+ * Parses each `<url>`/`<sitemap>` block so a `<loc>` is paired with its sibling
+ * `<lastmod>`; falls back to a flat `<loc>` scan for malformed documents.
+ */
+function extractEntries(xml: string): SitemapEntry[] {
+  const entries: SitemapEntry[] = [];
+  // \b after the tag name avoids matching <urlset>/<sitemapindex> wrappers.
+  const blockRegex = /<(url|sitemap)\b[\s\S]*?<\/\1>/gi;
+  let block: RegExpExecArray | null;
+
+  while ((block = blockRegex.exec(xml)) !== null) {
+    const loc = decodeFirstLoc(block[0]);
+    if (loc) {
+      entries.push({ loc, lastmod: parseLastmod(block[0]) });
+    }
+  }
+
+  if (entries.length === 0) {
+    // Blockless / malformed document — fall back to a flat <loc> scan.
+    for (const loc of extractLocs(xml)) {
+      entries.push({ loc });
+    }
+  }
+
+  return entries;
+}
+
+/** Returns the first decoded `<loc>` value within a fragment, or undefined. */
+function decodeFirstLoc(fragment: string): string | undefined {
+  const match = /<loc>([\s\S]*?)<\/loc>/.exec(fragment);
+  return match ? decodeLoc(match[1]) : undefined;
+}
+
+/**
+ * Parses a `<lastmod>` value into a Date, or undefined if missing/invalid.
+ *
+ * To keep `since` filtering deterministic across deployments:
+ * - a date-only value (`YYYY-MM-DD`) resolves to the **end** of that UTC day, so an
+ *   "at or after `since`" filter keeps a page touched anywhere on its lastmod day;
+ * - a datetime without a timezone designator is interpreted as **UTC** (not the
+ *   host's local time).
+ */
+function parseLastmod(fragment: string): Date | undefined {
+  const match = /<lastmod>([\s\S]*?)<\/lastmod>/i.exec(fragment);
+  if (!match) return undefined;
+  const raw = match[1].trim();
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const day = new Date(`${raw}T00:00:00Z`);
+    if (Number.isNaN(day.getTime())) return undefined;
+    return new Date(day.getTime() + 24 * 60 * 60 * 1000 - 1);
+  }
+
+  const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(raw);
+  const date = new Date(hasTimezone ? raw : `${raw}Z`);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+/** Extracts and decodes all `<loc>` values (flat scan, CDATA + multi-line aware). */
 function extractLocs(xml: string): string[] {
   const locs: string[] = [];
   // [\s\S] matches across newlines (equivalent to the dotAll flag).
@@ -437,20 +576,24 @@ function extractLocs(xml: string): string[] {
   let match: RegExpExecArray | null;
 
   while ((match = locRegex.exec(xml)) !== null) {
-    let value = match[1].trim();
-    const cdata = value.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/);
-    if (cdata) {
-      // CDATA content is literal — it must NOT be entity-decoded.
-      value = cdata[1].trim();
-    } else {
-      value = decodeXmlEntities(value);
-    }
+    const value = decodeLoc(match[1]);
     if (value) {
       locs.push(value);
     }
   }
 
   return locs;
+}
+
+/** Trims, unwraps CDATA (literal — no entity decode) and entity-decodes a `<loc>` value. */
+function decodeLoc(raw: string): string {
+  const value = raw.trim();
+  const cdata = value.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/);
+  if (cdata) {
+    // CDATA content is literal — it must NOT be entity-decoded.
+    return cdata[1].trim();
+  }
+  return decodeXmlEntities(value);
 }
 
 function decodeXmlEntities(value: string): string {
@@ -482,4 +625,72 @@ export function generateKey(): string {
   const bytes = new Uint8Array(16);
   webCrypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Options for {@link verifyKeyFile}. */
+export interface VerifyKeyFileOptions {
+  /** The key your app expects to be served. */
+  key: string;
+  /** The host serving the key file (e.g. 'www.example.com'). Used to derive the URL. */
+  host?: string;
+  /** Full URL to the key file. Overrides the host-derived `https://<host>/<key>.txt`. */
+  keyLocation?: string;
+  /** Per-request timeout in ms. Defaults to 10000. */
+  timeoutMs?: number;
+}
+
+/** The result of a {@link verifyKeyFile} check. */
+export interface VerifyKeyFileResult {
+  /** Whether the key file is reachable and its contents match the key. */
+  ok: boolean;
+  /** The URL that was checked. */
+  url: string;
+  /** HTTP status of the check, if a response was received. */
+  status?: number;
+  /** A human-readable explanation when `ok` is false. */
+  reason?: string;
+}
+
+/**
+ * Confirms that your IndexNow key file is live and correct before submitting —
+ * the #1 cause of 403/422 rejections is a missing or mismatched key file. GETs
+ * the resolved key URL and asserts it returns 200 with the exact key as its body.
+ *
+ * Returns a diagnostic result (it does not throw on a failed check).
+ * @param options The key plus either `host` or an explicit `keyLocation`.
+ */
+export async function verifyKeyFile(options: VerifyKeyFileOptions): Promise<VerifyKeyFileResult> {
+  const { key, host, keyLocation } = options;
+  const url = keyLocation ?? (host ? `https://${host}/${key}.txt` : undefined);
+  if (!url) {
+    throw new Error('verifyKeyFile requires either "keyLocation" or "host".');
+  }
+
+  try {
+    const response = await fetchWithTimeout(
+      url,
+      { method: 'GET' },
+      options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    );
+    if (!response.ok) {
+      return {
+        ok: false,
+        url,
+        status: response.status,
+        reason: `Key file not reachable (HTTP ${response.status}).`,
+      };
+    }
+    const body = (await response.text()).trim();
+    if (body !== key) {
+      return {
+        ok: false,
+        url,
+        status: response.status,
+        reason: 'Key file contents do not match the expected key.',
+      };
+    }
+    return { ok: true, url, status: response.status };
+  } catch (error) {
+    return { ok: false, url, reason: error instanceof Error ? error.message : String(error) };
+  }
 }

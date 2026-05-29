@@ -18,10 +18,16 @@ import { NextResponse } from 'next/server';
  */
 export function createIndexNowRouteHandler(expectedKey: string) {
   return async function GET(
-    request: Request,
-    { params }: { params: { key: string } }
+    _request: Request,
+    { params }: { params: Promise<{ key: string }> }
   ) {
-    const { key } = params;
+    // Next.js 15+ passes `params` as a Promise; Next 13/14 pass a plain object.
+    // Awaiting a non-thenable is a no-op, so this works on every supported version.
+    const { key } = await params;
+
+    if (!key) {
+      return new NextResponse('Not found', { status: 404 });
+    }
 
     // The route will capture "my-key.txt" as the params.key
     // We need to extract the actual key by removing the .txt extension

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { notifyBatch, notifyUrl, type IndexNowOptions } from './index';
 
 /**
  * Creates a Next.js App Router API Route handler for serving the IndexNow key.
@@ -45,4 +46,109 @@ export function createIndexNowRouteHandler(expectedKey: string) {
     // Return 404 if the key does not match
     return new NextResponse('Not found', { status: 404 });
   };
+}
+
+/**
+ * Schedules an IndexNow notification to run *after* the response has been sent,
+ * using Next.js's `after()` API. The request is never blocked on the IndexNow
+ * round-trip, and indexing errors are logged rather than surfaced to the user.
+ *
+ * Ideal inside Server Actions / Route Handlers that mutate content:
+ *
+ * ```ts
+ * import { notifyAfter } from 'next-indexnow/next';
+ *
+ * export async function publishPost(slug: string) {
+ *   // ...persist changes...
+ *   await notifyAfter(`https://example.com/blog/${slug}`, {
+ *     key: process.env.INDEXNOW_KEY!,
+ *   });
+ * }
+ * ```
+ *
+ * On Next.js versions without `after()`, it falls back to a detached,
+ * non-blocking (best-effort) submission.
+ *
+ * @param urlOrUrls A single URL, or an array of URLs (sent as a batch — `host` required).
+ * @param options Configuration options including the API key.
+ */
+export async function notifyAfter(
+  urlOrUrls: string | string[],
+  options: IndexNowOptions
+): Promise<void> {
+  const run = async (): Promise<void> => {
+    try {
+      if (Array.isArray(urlOrUrls)) {
+        await notifyBatch(urlOrUrls, options);
+      } else {
+        await notifyUrl(urlOrUrls, options);
+      }
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('[next-indexnow] notifyAfter submission failed:', error);
+    }
+  };
+
+  const serverMod = (await import('next/server').catch(() => null)) as
+    | { after?: (cb: () => Promise<void> | void) => void; unstable_after?: (cb: () => Promise<void> | void) => void }
+    | null;
+  const after = serverMod?.after ?? serverMod?.unstable_after;
+
+  if (typeof after === 'function') {
+    try {
+      after(run);
+    } catch {
+      // after() throws synchronously when called outside an allowed request
+      // scope. Fall back to a detached submission rather than surfacing it.
+      void run();
+    }
+  } else {
+    // Fallback for Next < 15: fire-and-forget without blocking the response.
+    void run();
+  }
+}
+
+/** Options for {@link revalidateAndNotify}. */
+export interface RevalidateAndNotifyOptions extends IndexNowOptions {
+  /** Absolute base URL of your site (e.g. 'https://example.com'), used to build the URL to notify. */
+  baseUrl: string;
+  /** Revalidate a cache tag instead of a path (calls `revalidateTag`). */
+  tag?: string;
+}
+
+/**
+ * Couples Next.js on-demand revalidation with an IndexNow notification: it
+ * revalidates the given path (or tag) and then notifies IndexNow about the
+ * absolute URL — the canonical "this content changed, re-index it" flow.
+ *
+ * ```ts
+ * import { revalidateAndNotify } from 'next-indexnow/next';
+ *
+ * await revalidateAndNotify('/blog/my-post', {
+ *   baseUrl: 'https://example.com',
+ *   key: process.env.INDEXNOW_KEY!,
+ * });
+ * ```
+ *
+ * @param path The path to revalidate and (joined with `baseUrl`) to notify.
+ * @param options Configuration including `baseUrl`, the IndexNow `key`, and an optional `tag`.
+ */
+export async function revalidateAndNotify(
+  path: string,
+  options: RevalidateAndNotifyOptions
+): Promise<void> {
+  const { baseUrl, tag, ...indexNowOptions } = options;
+
+  const cacheMod = (await import('next/cache').catch(() => null)) as
+    | { revalidatePath?: (p: string) => void; revalidateTag?: (t: string) => void }
+    | null;
+
+  if (tag) {
+    cacheMod?.revalidateTag?.(tag);
+  } else {
+    cacheMod?.revalidatePath?.(path);
+  }
+
+  const url = new URL(path, baseUrl).toString();
+  await notifyAfter(url, indexNowOptions);
 }

@@ -1,6 +1,6 @@
 {
   "name": "next-indexnow",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "IndexNow protocol integration for Next.js applications",
   "type": "commonjs",
   "main": "./dist/index.js",

@@ -8,6 +8,7 @@ import {
   notifySitemap,
   verifyKeyFile,
   IndexNowError,
+  SEARCH_ENGINES,
 } from '../src/index';
 
 function mockFetch() {
@@ -230,6 +231,33 @@ describe('notifyUrl', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('endpoint routing', () => {
+  it('defaults to api.indexnow.org', async () => {
+    const fetchFn = mockFetch().mockResolvedValue(ok());
+    await notifyUrl('https://x.com/a', { key: KEY });
+    expect(fetchFn.mock.calls[0][0]).toMatch(/^https:\/\/api\.indexnow\.org\/indexnow\?/);
+  });
+
+  it('resolves a known engine name to its host', async () => {
+    const fetchFn = mockFetch().mockResolvedValue(ok());
+    await notifyUrl('https://x.com/a', { key: KEY, endpoint: 'bing' });
+    expect(fetchFn.mock.calls[0][0]).toMatch(/^https:\/\/www\.bing\.com\/indexnow\?/);
+    expect(SEARCH_ENGINES.bing).toBe('www.bing.com');
+  });
+
+  it('passes an unknown value through as a raw host', async () => {
+    const fetchFn = mockFetch().mockResolvedValue(ok());
+    await notifyUrl('https://x.com/a', { key: KEY, endpoint: 'indexnow.example.com' });
+    expect(fetchFn.mock.calls[0][0]).toMatch(/^https:\/\/indexnow\.example\.com\/indexnow\?/);
+  });
+
+  it('routes a batch to the chosen engine', async () => {
+    const fetchFn = mockFetch().mockResolvedValue(ok());
+    await notifyBatch(['https://x.com/a'], { key: KEY, host: 'x.com', endpoint: 'yandex' });
+    expect(fetchFn.mock.calls[0][0]).toBe('https://yandex.com/indexnow');
   });
 });
 
